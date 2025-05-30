@@ -19,7 +19,8 @@ async def ensure_server_ready():
         while time.time() < deadline:
             try:
                 print("Checking server status...")
-                resp = await session.get(endpoint + "status")
+                status_url = endpoint.replace("wss://", "https://", 1) + "status"
+                resp = await session.get(status_url)
                 if resp.status == 200:
                     return
             except Exception as e:
