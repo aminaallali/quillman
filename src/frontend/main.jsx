@@ -1,16 +1,29 @@
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+
 const { useRef, useEffect, useState } = React;
 
 const baseURL = "" // points to whatever is serving this app (eg your -dev.modal.run for modal serve, or .modal.run for modal deploy)
 
 const getBaseURL = () => {
-  // use current web app server domain to construct the url for the moshi app
+  const envMoshiUrl = import.meta.env.VITE_MOSHI_WS_URL;
+  if (envMoshiUrl && envMoshiUrl.trim() !== '') {
+    console.log("Using VITE_MOSHI_WS_URL:", envMoshiUrl);
+    return envMoshiUrl;
+  }
+
+  // Fallback to original logic if environment variable is not set
+  console.log("VITE_MOSHI_WS_URL not set, using fallback logic based on current hostname.");
   const currentURL = new URL(window.location.href);
   let hostname = currentURL.hostname;
+
   if (hostname.includes('-web')) {
     hostname = hostname.replace('-web', '-moshi-web');
   } else {
+    // Append '-moshi-web' if '-web' is not present
     hostname = `${hostname}-moshi-web`;
   }
+
   const wsProtocol = currentURL.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${wsProtocol}//${hostname}/ws`; 
 }
@@ -292,7 +305,7 @@ const App = () => {
                 Moshi
             </a> and
           </span>
-          <img className="w-24" src="./modal-logo.svg" alt="Modal logo" />
+          <img className="w-24" src="/modal-logo.svg" alt="Modal logo" />
         </footer>
       </a>
     </div>
@@ -300,6 +313,7 @@ const App = () => {
 }
 
 const AudioControl = ({ recorder, amplitude }) => {
+  const { useState, useEffect } = React; // Added React import for hooks
   const [muted, setMuted] = useState(true);
 
   const toggleMute = () => {
@@ -348,6 +362,7 @@ const AudioControl = ({ recorder, amplitude }) => {
 };
 
 const TextOutput = ({ warmupComplete, completedSentences, pendingSentence, isReconnecting, connectionStatusMessage }) => {
+  const { useRef, useEffect } = React; // Added React import for hooks
   const containerRef = useRef(null);
   
   useEffect(() => {
@@ -393,7 +408,8 @@ const TextOutput = ({ warmupComplete, completedSentences, pendingSentence, isRec
   );
 };
 
-
-
-const container = document.getElementById("react");
-ReactDOM.createRoot(container).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);

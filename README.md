@@ -16,8 +16,8 @@ This repo is meant to serve as a starting point for your own language model-base
 
 ## File structure
 
-1. React frontend ([`src/frontend/`](./src/frontend/)), served by [`src/app.py`](./src/app.py)
-2. Moshi websocket server ([`src/moshi.py`](./src/moshi.py))
+1. React frontend ([`src/frontend/`](./src/frontend/)), a Vite application.
+2. Moshi websocket server ([`src/moshi.py`](./src/moshi.py)), along with a minimal FastAPI wrapper in [`src/app.py`](./src/app.py) for Modal deployment.
 
 ## Developing locally
 
@@ -61,31 +61,96 @@ python tests/moshi_client.py
 
 And begin speaking! Be sure to have your microphone and speakers enabled.
 
-### Developing the http server and frontend
+### Developing the Backend (Moshi Service)
 
-The http server at `src/app.py` is a second [FastAPI](https://fastapi.tiangolo.com/) app, for serving the frontend as static files.
+The `src/app.py` file is the main entry point for running the Modal backend, which includes the Moshi WebSocket service from `src/moshi.py`.
 
-A [development server](https://modal.com/docs/guide/webhooks#developing-with-modal-serve) can be run with:
-
+To run a local development server for the backend:
 ```shell
 modal serve src.app
 ```
+This command starts the Moshi WebSocket server. Modal will provide a WebSocket URL (e.g., `ws://localhost:8000/ws` or similar, check the output of `modal serve`). You'll use this URL for local frontend development.
 
-Since `src/app.py` imports the `src/moshi.py` module, this also starts the Moshi websocket server.
+Changes to backend Python files will be automatically applied while `modal serve` is running. Press `Ctrl+C` to stop.
 
-In the terminal output, you'll find a URL that you can visit to use your app.
-While the `modal serve` process is running, changes to any of the project files will be automatically applied. `Ctrl+C` will stop the app.
+### Developing the Frontend (Vite + React)
 
-Note that for frontend changes, the browser cache may need to be cleared.
+The frontend is a Vite-powered React application located in `src/frontend/`.
 
-### Deploying to Modal
+1.  **Navigate to the frontend directory:**
+    ```bash
+    cd src/frontend
+    ```
 
-Once you're happy with your changes, [deploy](https://modal.com/docs/guide/managing-deployments#creating-deployments) your app:
+2.  **Install dependencies (if you haven't already):**
+    ```bash
+    npm install
+    ```
 
-```shell
-modal deploy src.app
-```
+3.  **Configure Backend URL:**
+    Create a `.env` file in the `src/frontend/` directory (you can copy `.env.example`). Set the `VITE_MOSHI_WS_URL` to the WebSocket URL provided by your local `modal serve src.app` process. For example:
+    ```env
+    VITE_MOSHI_WS_URL=ws://localhost:8000/ws 
+    ```
+    *(Note: The exact port for the local Modal WebSocket might vary; check the output of `modal serve`)*
 
-This will deploy both the frontend server and the Moshi websocket server.
+4.  **Run the Vite development server:**
+    ```bash
+    npm run dev
+    ```
+    This will typically start the frontend on `http://localhost:5173` and open it in your browser. Changes to frontend files (e.g., in `src/frontend/main.jsx`) will trigger hot module replacement.
 
-Note that leaving the app deployed on Modal doesn't cost you anything! Modal apps are serverless and scale to 0 when not in use.
+## Deployment
+
+This application uses a hybrid deployment model:
+- The **frontend** (React user interface) is deployed to Vercel.
+- The **backend** (FastAPI server and the Moshi AI service) is deployed to Modal.
+
+### 1. Deploying Backend to Modal
+
+The backend, which includes the real-time audio processing AI (`Moshi`), requires GPU resources and is deployed using Modal.
+
+1.  **Install Modal Client and Authenticate (if not done previously):**
+    ```bash
+    pip install modal-client
+    modal token new
+    ```
+    Follow the instructions to authenticate.
+
+2.  **Deploy the Application:**
+    The main application entry point for Modal is `src/app.py`, which also deploys the `Moshi` service.
+    ```bash
+    modal deploy src.app --name your-app-name
+    ```
+    Replace `your-app-name` with a unique name for your deployment (e.g., `moshi-chat-app`).
+
+3.  **Obtain Moshi WebSocket URL:**
+    After deployment, Modal will output the URLs for your services. Look for the URL corresponding to the `Moshi` WebSocket endpoint. It will typically look like:
+    `wss://your-app-name-moshi-web.modal.run/ws`
+    You will need this URL for the frontend deployment on Vercel.
+
+### 2. Deploying Frontend to Vercel
+
+The frontend is a Vite-based React application that can be easily deployed to Vercel.
+
+1.  **Push to Git:**
+    Ensure your latest code, including the `vercel.json` file at the repository root and the updated frontend in `src/frontend/`, is pushed to your GitHub, GitLab, or Bitbucket repository.
+
+2.  **Create Vercel Project:**
+    - Log in to your Vercel account.
+    - Click "Add New..." -> "Project".
+    - Import your Git repository.
+
+3.  **Configure Project Settings:**
+    - Vercel should automatically detect the Vite configuration due to the `vercel.json` file and the frontend structure. The `vercel.json` specifies that the frontend is in `src/frontend/` and how to build it.
+    - **Set Environment Variable (Crucial):**
+        - Navigate to your project settings in Vercel (Settings -> Environment Variables).
+        - Add a new environment variable:
+            - **Name:** `VITE_MOSHI_WS_URL`
+            - **Value:** Paste the Moshi WebSocket URL you obtained from the Modal deployment (e.g., `wss://your-app-name-moshi-web.modal.run/ws`).
+
+4.  **Deploy:**
+    - Click the "Deploy" button. Vercel will build the frontend (running `npm run build` in the `src/frontend` directory as specified by `vercel.json`) and deploy it.
+
+5.  **Access Your Site:**
+    Once deployed, Vercel will provide you with a URL to access your live frontend.
