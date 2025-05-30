@@ -93,6 +93,27 @@ class Moshi:
         torch.cuda.synchronize()
 
     def reset_state(self):
+        # Attempt to close existing stream objects before creating new ones
+        if hasattr(self, 'opus_stream_inbound') and self.opus_stream_inbound is not None:
+            if hasattr(self.opus_stream_inbound, 'close'):
+                try:
+                    print("Closing existing opus_stream_inbound.")
+                    self.opus_stream_inbound.close()
+                except Exception as e:
+                    print(f"Error closing opus_stream_inbound: {e}")
+            else:
+                print("opus_stream_inbound does not have a close method.")
+        
+        if hasattr(self, 'opus_stream_outbound') and self.opus_stream_outbound is not None:
+            if hasattr(self.opus_stream_outbound, 'close'):
+                try:
+                    print("Closing existing opus_stream_outbound.")
+                    self.opus_stream_outbound.close()
+                except Exception as e:
+                    print(f"Error closing opus_stream_outbound: {e}")
+            else:
+                print("opus_stream_outbound does not have a close method.")
+
         # we use Opus format for audio across the websocket, as it can be safely streamed and decoded in real-time
         self.opus_stream_outbound = sphn.OpusStreamWriter(self.mimi.sample_rate)
         self.opus_stream_inbound = sphn.OpusStreamReader(self.mimi.sample_rate)
@@ -131,11 +152,16 @@ class Moshi:
                         data = await ws.receive_bytes()
 
                         if not isinstance(data, bytes):
-                            print("received non-bytes message")
-                            continue
+                            print("Error: Received non-bytes message from client.")
+                            await ws.close(code=1003, reason="Unsupported data type received. Expected bytes.")
+                            return  # Terminate this client's processing
                         if len(data) == 0:
-                            print("received empty message")
-                            continue
+                            print("Warning: Received empty message from client.")
+                            # Depending on strictness, this could also be a close condition.
+                            # For now, let's treat it as a policy violation if it's problematic.
+                            # If empty messages are absolutely not allowed:
+                            await ws.close(code=1008, reason="Empty message received. Data messages must not be empty.")
+                            return  # Terminate this client's processing
                         self.opus_stream_inbound.append_bytes(data)
 
                 async def inference_loop():

@@ -6,7 +6,11 @@ const getBaseURL = () => {
   // use current web app server domain to construct the url for the moshi app
   const currentURL = new URL(window.location.href);
   let hostname = currentURL.hostname;
-  hostname = hostname.replace('-web', '-moshi-web');
+  if (hostname.includes('-web')) {
+    hostname = hostname.replace('-web', '-moshi-web');
+  } else {
+    hostname = `${hostname}-moshi-web`;
+  }
   const wsProtocol = currentURL.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${wsProtocol}//${hostname}/ws`; 
 }
@@ -24,11 +28,15 @@ const App = () => {
 
   // WebSocket
   const socketRef = useRef(null); // Ongoing websocket connection
+  const reconnectTimerRef = useRef(null); // Timer for reconnection attempts
 
   // UI State
   const [warmupComplete, setWarmupComplete] = useState(false);
   const [completedSentences, setCompletedSentences] = useState([]);
   const [pendingSentence, setPendingSentence] = useState('');
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const [connectionStatusMessage, setConnectionStatusMessage] = useState('');
 
 
   // Mic Input: start the Opus recorder
@@ -37,7 +45,7 @@ const App = () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
     const recorder = new Recorder({
-      encoderPath: "https://cdn.jsdelivr.net/npm/opus-recorder@latest/dist/encoderWorker.min.js",
+      encoderPath: "https://cdn.jsdelivr.net/npm/opus-recorder@8.0.5/dist/encoderWorker.min.js",
       streamPages: true,
       encoderApplication: 2049,
       encoderFrameSize: 80, // milliseconds, equal to 1920 samples at 24000 Hz
@@ -128,17 +136,28 @@ const App = () => {
   };
 
 
-  // WebSocket: open websocket connection and start recording
-  useEffect(() => {
+  // WebSocket connection logic
+  const connectWebSocket = () => {
     const endpoint = getBaseURL();
-    console.log("Connecting to", endpoint);
+    console.log(`Attempting to connect to ${endpoint} (Attempt: ${reconnectAttempts + 1})`);
+    setConnectionStatusMessage(`Connecting... (Attempt ${reconnectAttempts + 1})`);
+
     const socket = new WebSocket(endpoint);
-    socketRef.current = socket;
 
     socket.onopen = () => {
       console.log("WebSocket connection opened");
-      startRecording();
+      socketRef.current = socket;
       setWarmupComplete(true);
+      setIsReconnecting(false);
+      setReconnectAttempts(0);
+      setConnectionStatusMessage("Connected.");
+      // Clear message after a few seconds
+      setTimeout(() => setConnectionStatusMessage(''), 3000);
+      
+      // Start recording only if not already started or if it was stopped
+      if (!recorder || !recorder.isRecording()) {
+        startRecording();
+      }
     };
 
     socket.onmessage = async (event) => {
@@ -149,9 +168,13 @@ const App = () => {
       const payload = arrayBuffer.slice(1);
       if (tag === 1) {
         // audio data
-        const { channelData, samplesDecoded, sampleRate } = await decoderRef.current.decode(new Uint8Array(payload));
-        if (samplesDecoded > 0) {
-          scheduleAudioPlayback(channelData[0]);
+        if (decoderRef.current) {
+          const { channelData, samplesDecoded } = await decoderRef.current.decode(new Uint8Array(payload));
+          if (samplesDecoded > 0) {
+            scheduleAudioPlayback(channelData[0]);
+          }
+        } else {
+          console.warn("Decoder not ready, dropping audio packet.")
         }
       }
       if (tag === 2) {
@@ -170,21 +193,83 @@ const App = () => {
       }
     };
 
-    socket.onclose = () => {
-      console.log("WebSocket connection closed");
+    socket.onerror = (error) => {
+      console.error("WebSocket error:", error);
+      // onclose will usually be called automatically after an error
     };
 
-    return () => {
-      socket.close();
+    socket.onclose = () => {
+      console.log("WebSocket connection closed");
+      socketRef.current = null; // Clear the ref
+      setWarmupComplete(false); // No longer ready
+      
+      if (recorder && recorder.isRecording()) {
+        // Consider stopping recorder or handling audio data queueing if desired
+        // For now, we just log. If startRecording is called on reconnect, it handles new stream.
+        console.log("Recorder was active, will be re-initialized on reconnect if needed.");
+      }
+
+      // Don't attempt to reconnect if the component is unmounting (timer cleared)
+      // or if a reconnection attempt is already scheduled by another close event
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+      }
+      
+      const currentAttempts = reconnectAttempts; // Capture current attempts for the closure
+      const maxAttempts = 10; // Max reconnection attempts
+
+      if (currentAttempts < maxAttempts) {
+        setIsReconnecting(true);
+        const delay = Math.min(30000, Math.pow(2, currentAttempts) * 1000); // Exponential backoff, max 30s
+        setConnectionStatusMessage(`Connection lost. Retrying in ${delay / 1000}s... (Attempt ${currentAttempts + 1})`);
+        
+        reconnectTimerRef.current = setTimeout(() => {
+          setReconnectAttempts(prevAttempts => prevAttempts + 1);
+          connectWebSocket();
+        }, delay);
+      } else {
+        setConnectionStatusMessage(`Failed to reconnect after ${maxAttempts} attempts. Please refresh the page.`);
+        setIsReconnecting(false);
+        console.error(`Failed to reconnect after ${maxAttempts} attempts.`);
+      }
     };
-  }, []);
+    // Assign to ref immediately for cleanup purposes, even before onopen
+    socketRef.current = socket; 
+  };
+
+  // Effect for initializing and cleaning up WebSocket
+  useEffect(() => {
+    connectWebSocket(); // Initial connection attempt
+
+    return () => {
+      // Cleanup on component unmount
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (socketRef.current) {
+        socketRef.current.close();
+        socketRef.current = null;
+      }
+      if (recorder) {
+        recorder.stop(); // Stop opus recorder
+        // If you have a MediaStreamTrack for amplitude, stop that too
+      }
+    };
+  }, []); // Empty dependency array means this runs once on mount and cleans up on unmount
 
   return (
     <div className="bg-gray-900 text-white min-h-screen flex flex-col items-center justify-center p-4">
       <div className="bg-gray-800 rounded-lg shadow-lg w-full max-w-xl p-6 mb-8">
         <div className="flex">
           <div className="w-5/6 overflow-y-auto max-h-64">
-            <TextOutput warmupComplete={warmupComplete} completedSentences={completedSentences} pendingSentence={pendingSentence} />
+            <TextOutput 
+              warmupComplete={warmupComplete} 
+              completedSentences={completedSentences} 
+              pendingSentence={pendingSentence}
+              isReconnecting={isReconnecting}
+              connectionStatusMessage={connectionStatusMessage} 
+            />
           </div>
           <div className="w-1/6 ml-4 pl-4">
             <AudioControl recorder={recorder} amplitude={amplitude} />
@@ -262,27 +347,47 @@ const AudioControl = ({ recorder, amplitude }) => {
   );
 };
 
-const TextOutput = ({ warmupComplete, completedSentences, pendingSentence }) => {
+const TextOutput = ({ warmupComplete, completedSentences, pendingSentence, isReconnecting, connectionStatusMessage }) => {
   const containerRef = useRef(null);
-  const allSentences = [...completedSentences, pendingSentence];
-  if (pendingSentence.length === 0 && allSentences.length > 1) {
-    allSentences.pop();
-  }
-
+  
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [completedSentences, pendingSentence]);
+  }, [completedSentences, pendingSentence, connectionStatusMessage]);
+
+  let statusElement = null;
+  if (connectionStatusMessage) {
+    statusElement = <p className="text-yellow-400 my-2">{connectionStatusMessage}</p>;
+  } else if (isReconnecting) { // Default reconnecting message if specific one isn't set
+    statusElement = <p className="text-yellow-400 animate-pulse my-2">Attempting to reconnect...</p>;
+  } else if (!warmupComplete) {
+    statusElement = <p className="text-gray-400 animate-pulse my-2">Warming up model...</p>;
+  }
+
+  // Determine if we should show sentences or status messages
+  // Show sentences if warmup is complete AND we are not actively showing a connection status message
+  // (e.g. "Connected." can briefly show, then sentences appear)
+  const showSentences = warmupComplete && !connectionStatusMessage && !isReconnecting;
+
+  // Construct allSentences for display if needed
+  const allSentences = [...completedSentences, pendingSentence];
+  if (pendingSentence.length === 0 && allSentences.length > 0 && completedSentences.includes(allSentences[allSentences.length-1])) {
+     // Avoid duplicating the last completed sentence if pending is empty
+     // This logic might need adjustment based on how pendingSentence is cleared
+  }
+
 
   return (
     <div ref={containerRef} className="flex flex-col-reverse overflow-y-auto max-h-64 pr-2">
-      {warmupComplete ? (
-        allSentences.map((sentence, index) => (
-          <p key={index} className="text-gray-300 my-2">{sentence}</p>
-        )).reverse()
-      ) : (
-        <p className="text-gray-400 animate-pulse">Warming up model...</p>
+      {statusElement}
+      {showSentences && allSentences.map((sentence, index) => (
+        // Ensure unique keys if sentences can be identical
+        <p key={`${sentence}-${index}`} className="text-gray-300 my-2">{sentence}</p>
+      )).reverse()}
+      {/* If not showing sentences and no specific status, perhaps a placeholder or nothing */}
+      {!showSentences && !statusElement && (
+        <p className="text-gray-400 my-2">Waiting for connection...</p>
       )}
     </div>
   );
